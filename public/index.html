@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>旁路观察</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/task-ask/assets/app.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="top">
+      <div class="brand">
+        <p class="eyebrow">Side Observer</p>
+        <h1>旁路观察</h1>
+      </div>
+      <div class="session-pick">
+        <label for="sessionSelect">会话</label>
+        <select id="sessionSelect"></select>
+        <button type="button" id="refreshBtn" class="ghost-btn">刷新</button>
+      </div>
+    </header>
+
+    <section class="status" id="statusCard" aria-live="polite">
+      <div class="status-head">
+        <div>
+          <p class="kicker">当前阶段</p>
+          <h2 class="phase" id="phase">连接中</h2>
+        </div>
+        <p class="agent" id="agentStatus"></p>
+      </div>
+      <p class="detail" id="phaseDetail"></p>
+      <p class="meta" id="meta"></p>
+      <div class="todo-block">
+        <p class="kicker">待办</p>
+        <ul class="todos" id="todos"></ul>
+      </div>
+      <div class="live" id="live" hidden>
+        <p class="kicker">实时输出</p>
+        <pre id="liveText"></pre>
+      </div>
+    </section>
+
+    <section class="chat" id="chat" aria-label="旁路对话"></section>
+
+    <footer class="composer">
+      <div class="hints" aria-label="快捷问题">
+        <button type="button" data-q="现在在干什么？">现在在干什么</button>
+        <button type="button" data-q="任务做到哪一步了？">做到哪一步了</button>
+        <button type="button" data-q="还有哪些待办没完成？">待办进度</button>
+        <button type="button" data-q="最近调用了哪些工具？">最近工具</button>
+      </div>
+      <form id="askForm">
+        <textarea id="question" rows="2" placeholder="询问当前任务或历史，不会打断主任务…" required></textarea>
+        <button type="submit" id="askBtn">询问</button>
+      </form>
+      <p class="footnote">独立模型调用 · 只读快照 · 不写入主会话</p>
+    </footer>
+  </div>
+  <script src="/task-ask/assets/app.js"></script>
+</body>
+</html>
