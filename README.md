@@ -6,7 +6,9 @@
 
 - 会话标题栏 **「旁路询问」** → `ctx.sidebarRight.openTab('task-ask')`
 - 在**当前界面右侧栏**打开询问面板（自动展开 rightbar）
-- 实时只读任务阶段 / 待办；独立 LLM 回答
+- 实时只读任务阶段 / 待办 / 工具动态；独立 LLM 回答
+- 已完成计划默认折叠隐藏；工具动态下拉折叠
+- 旁路可调用主界面工具（结果不写回主会话）
 - **不**写入主会话，**不** `followup` / `steer` / `prompt`
 
 ## 接入点
@@ -53,6 +55,7 @@ Copy-Item -Recurse -Force D:\deepseek_harness\dsh-plugin-task-ask\* "$env:USERPR
 
 ## 更新记录
 
+- **2026-11-12 0.1.9**：已完成计划默认折叠隐藏；工具动态改为下拉模块；旁路 ask 支持调用主界面工具（SSE `tool` 事件）；状态条/提示词同步实时上下文。
 - **2026-10-25 0.1.8**：旁路回答改用主聊天官方 `MarkdownText`（`@deepseek-ai/dsh-client-ui-primitives`），去掉自研 HTML 渲染。
 - **2026-10-25 0.1.7**：`session/disposed` + 孤儿 prune 回收 live；ask prompt 去掉 open-turn/live 重复；状态条展示最近动态预览；markdown 支持表格/标题/引用/嵌套列表。
 - **2026-10-25 0.1.6**：修复 open-turn 读错事件字段（`tool/result` / `assistant/*` 在 `data.message`）；历史摘要改为保留最近片段；中止询问不再卡住「思考中」；默认模型服务在 apply 时固定。

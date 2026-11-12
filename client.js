@@ -148,6 +148,71 @@ window.__ModuleLoader__.load({
           color: var(--dsw-alias-label-tertiary);
           letter-spacing: 0.02em;
         }
+        .taskAsk.fold {
+          margin: 8px 0 0;
+          border-radius: 10px;
+          background: var(--dsw-alias-interactive-bg-hover);
+          overflow: hidden;
+        }
+        .taskAsk.fold > summary {
+          list-style: none;
+          cursor: pointer;
+          user-select: none;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          padding: 8px 10px;
+          font-size: 11px;
+          font-weight: 600;
+          color: var(--dsw-alias-label-tertiary);
+          letter-spacing: 0.02em;
+        }
+        .taskAsk.fold > summary::-webkit-details-marker { display: none; }
+        .taskAsk.fold > summary::after {
+          content: "";
+          width: 6px;
+          height: 6px;
+          border-right: 1.5px solid currentColor;
+          border-bottom: 1.5px solid currentColor;
+          transform: rotate(-45deg);
+          transition: transform 0.12s ease;
+          flex: none;
+        }
+        .taskAsk.fold[open] > summary::after {
+          transform: rotate(45deg);
+        }
+        .taskAsk.foldBody {
+          padding: 0 10px 8px;
+        }
+        .taskAsk.toolRow {
+          display: grid;
+          gap: 2px;
+          margin: 0 0 6px;
+          font-size: var(--dsh-content-font-size-secondary, 13px);
+          line-height: calc(18px + var(--dsh-content-font-delta-secondary, 0px));
+          color: var(--dsw-alias-label-secondary);
+        }
+        .taskAsk.toolName {
+          font-weight: 600;
+          color: var(--dsw-alias-label-primary);
+        }
+        .taskAsk.toolPreview {
+          white-space: pre-wrap;
+          word-break: break-word;
+          color: var(--dsw-alias-label-tertiary);
+          max-height: 4.5em;
+          overflow: hidden;
+        }
+        .taskAsk.toolError { color: var(--dsw-alias-state-error-primary, #c44); }
+        .taskAsk.inlineTools {
+          margin: 0 0 8px;
+          padding: 8px 10px;
+          border-radius: 10px;
+          background: var(--dsw-alias-interactive-bg-hover);
+          font-size: var(--dsh-content-font-size-secondary, 13px);
+          color: var(--dsw-alias-label-secondary);
+        }
         .taskAsk.todos {
           list-style: none;
           margin: 8px 0 0;
@@ -421,7 +486,7 @@ window.__ModuleLoader__.load({
       document.head.appendChild(style)
     }
 
-    async function consumeAskStream(res, onDelta) {
+    async function consumeAskStream(res, { onDelta, onTool }) {
       if (!res.body || !res.body.getReader) {
         const text = await res.text()
         if (!text) throw new Error(res.ok ? '空响应' : `请求失败（HTTP ${res.status}）`)
@@ -456,6 +521,8 @@ window.__ModuleLoader__.load({
         if (event === 'delta' && typeof data.text === 'string') {
           full += data.text
           onDelta(full)
+        } else if (event === 'tool' && typeof onTool === 'function') {
+          onTool(data)
         } else if (event === 'error') {
           streamError = new Error(data.error || '流式失败')
         }
@@ -482,22 +549,68 @@ window.__ModuleLoader__.load({
       return full
     }
 
-    function AssistantBody({ text, streaming, error }) {
+    function AssistantBody({ text, streaming, error, tools }) {
       const labels = useMemo(() => MD_LABELS, [])
       if (error) {
         return jsx('div', { className: 'taskAsk msgError', children: text })
       }
-      if (!text && streaming) {
-        return jsx('div', { className: 'taskAsk turnStatus', children: '思考中' })
-      }
-      return jsx('div', {
-        className: 'taskAsk assistant',
-        'data-streaming': streaming || undefined,
-        children: jsx(MarkdownText, {
-          text: String(text || ''),
-          streaming: Boolean(streaming),
-          labels,
-        }),
+      const toolList = Array.isArray(tools) ? tools : []
+      const body = (!text && streaming)
+        ? jsx('div', { className: 'taskAsk turnStatus', children: '思考中' })
+        : jsx('div', {
+          className: 'taskAsk assistant',
+          'data-streaming': streaming || undefined,
+          children: jsx(MarkdownText, {
+            text: String(text || ''),
+            streaming: Boolean(streaming),
+            labels,
+          }),
+        })
+      if (!toolList.length) return body
+      return jsxs('div', {
+        children: [
+          jsxs('details', {
+            className: 'taskAsk fold',
+            open: toolList.some((t) => t.status === 'running'),
+            children: [
+              jsx('summary', {
+                children: `旁路工具 · ${toolList.length}`,
+              }),
+              jsx('div', {
+                className: 'taskAsk foldBody',
+                children: toolList.map((t, i) => jsxs('div', {
+                  className: `taskAsk toolRow${t.status === 'error' ? ' toolError' : ''}`,
+                  children: [
+                    jsx('span', {
+                      className: 'taskAsk toolName',
+                      children: `${t.name} · ${t.status === 'running' ? '执行中' : t.status === 'error' ? '失败' : '完成'}`,
+                    }),
+                    t.preview
+                      ? jsx('div', { className: 'taskAsk toolPreview', children: t.preview })
+                      : null,
+                  ],
+                }, `${t.name}-${i}`)),
+              }),
+            ],
+          }),
+          body,
+        ],
+      })
+    }
+
+    function TodoList({ items }) {
+      if (!items?.length) return null
+      return jsx('ul', {
+        className: 'taskAsk todos',
+        children: items.map((todo, i) => jsxs('li', {
+          className: todo.status === 'completed'
+            ? 'taskAsk todoDone'
+            : todo.status === 'in_progress' ? 'taskAsk todoActive' : undefined,
+          children: [
+            jsx('span', { className: 'taskAsk check', 'aria-hidden': true }),
+            jsx('span', { children: todo.content }),
+          ],
+        }, `${todo.content}-${i}`)),
       })
     }
 
@@ -567,14 +680,44 @@ window.__ModuleLoader__.load({
             body: JSON.stringify({ sessionId: String(sessionId), question: q, stream: true }),
             signal: ac.signal,
           })
-          await consumeAskStream(res, (full) => {
-            setMessages((prev) => {
-              const next = prev.slice()
-              const last = next[next.length - 1]
-              if (!last || last.role !== 'bot') return prev
-              next[next.length - 1] = { ...last, text: full, streaming: true, error: false }
-              return next
-            })
+          await consumeAskStream(res, {
+            onDelta: (full) => {
+              setMessages((prev) => {
+                const next = prev.slice()
+                const last = next[next.length - 1]
+                if (!last || last.role !== 'bot') return prev
+                next[next.length - 1] = { ...last, text: full, streaming: true, error: false }
+                return next
+              })
+            },
+            onTool: (ev) => {
+              setMessages((prev) => {
+                const next = prev.slice()
+                const last = next[next.length - 1]
+                if (!last || last.role !== 'bot') return prev
+                const tools = Array.isArray(last.tools) ? last.tools.slice() : []
+                const name = String(ev?.name || 'tool')
+                const status = String(ev?.status || 'done')
+                const preview = typeof ev?.preview === 'string'
+                  ? ev.preview
+                  : (typeof ev?.arguments === 'string' ? ev.arguments.slice(0, 240) : '')
+                if (status === 'running') {
+                  tools.push({ name, status, preview })
+                } else {
+                  let idx = -1
+                  for (let i = tools.length - 1; i >= 0; i -= 1) {
+                    if (tools[i].name === name && tools[i].status === 'running') {
+                      idx = i
+                      break
+                    }
+                  }
+                  if (idx >= 0) tools[idx] = { ...tools[idx], status, preview: preview || tools[idx].preview }
+                  else tools.push({ name, status, preview })
+                }
+                next[next.length - 1] = { ...last, tools, streaming: true, error: false }
+                return next
+              })
+            },
           })
           setMessages((prev) => {
             const next = prev.slice()
@@ -582,7 +725,7 @@ window.__ModuleLoader__.load({
             if (!last || last.role !== 'bot') return prev
             next[next.length - 1] = {
               ...last,
-              text: last.text || '(无内容)',
+              text: last.text || (last.tools?.length ? '(工具已执行)' : '(无内容)'),
               streaming: false,
             }
             return next
@@ -617,7 +760,10 @@ window.__ModuleLoader__.load({
         }
       }
 
-      const todos = Array.isArray(snap?.todos) ? snap.todos.slice(0, 8) : []
+      const todosActive = Array.isArray(snap?.todos) ? snap.todos.slice(0, 8) : []
+      const todosDone = Array.isArray(snap?.todosDone) ? snap.todosDone.slice(0, 12) : []
+      const toolEvents = Array.isArray(snap?.toolEvents) ? snap.toolEvents.slice(0, 10) : []
+      const planComplete = Boolean(snap?.planComplete)
       const meta = snap
         ? [
           snap.title,
@@ -636,7 +782,7 @@ window.__ModuleLoader__.load({
             className: 'taskAsk header',
             children: [
               jsx('p', { className: 'taskAsk headerTitle', children: '旁路询问' }),
-              jsx('p', { className: 'taskAsk headerHint', children: '只读 · 不打断' }),
+              jsx('p', { className: 'taskAsk headerHint', children: '只读 · 可调工具 · 不打断' }),
             ],
           }),
           snap
@@ -672,18 +818,68 @@ window.__ModuleLoader__.load({
                     ],
                   })
                   : null,
-                todos.length
-                  ? jsx('ul', {
-                    className: 'taskAsk todos',
-                    children: todos.map((todo, i) => jsxs('li', {
-                      className: todo.status === 'completed'
-                        ? 'taskAsk todoDone'
-                        : todo.status === 'in_progress' ? 'taskAsk todoActive' : undefined,
+                todosActive.length
+                  ? jsxs('div', {
+                    children: [
+                      jsx('span', {
+                        className: 'taskAsk liveLabel',
+                        style: { marginTop: 8 },
+                        children: '进行中计划',
+                      }),
+                      jsx(TodoList, { items: todosActive }),
+                    ],
+                  })
+                  : null,
+                planComplete && todosDone.length
+                  ? jsxs('details', {
+                    className: 'taskAsk fold',
+                    children: [
+                      jsx('summary', {
+                        children: `已完成计划 · ${todosDone.length}`,
+                      }),
+                      jsx('div', {
+                        className: 'taskAsk foldBody',
+                        children: jsx(TodoList, { items: todosDone }),
+                      }),
+                    ],
+                  })
+                  : (!planComplete && todosDone.length
+                    ? jsxs('details', {
+                      className: 'taskAsk fold',
                       children: [
-                        jsx('span', { className: 'taskAsk check', 'aria-hidden': true }),
-                        jsx('span', { children: todo.content }),
+                        jsx('summary', {
+                          children: `已完成 · ${todosDone.length}`,
+                        }),
+                        jsx('div', {
+                          className: 'taskAsk foldBody',
+                          children: jsx(TodoList, { items: todosDone }),
+                        }),
                       ],
-                    }, `${todo.content}-${i}`)),
+                    })
+                    : null),
+                toolEvents.length
+                  ? jsxs('details', {
+                    className: 'taskAsk fold',
+                    children: [
+                      jsx('summary', {
+                        children: `工具动态 · ${toolEvents.length}`,
+                      }),
+                      jsx('div', {
+                        className: 'taskAsk foldBody',
+                        children: toolEvents.map((t, i) => jsxs('div', {
+                          className: 'taskAsk toolRow',
+                          children: [
+                            jsx('span', {
+                              className: 'taskAsk toolName',
+                              children: `${t.name}${t.kind === 'result' ? ' · 结果' : ' · 调用'}`,
+                            }),
+                            t.preview
+                              ? jsx('div', { className: 'taskAsk toolPreview', children: t.preview })
+                              : null,
+                          ],
+                        }, `${t.name}-${t.kind}-${i}`)),
+                      }),
+                    ],
                   })
                   : null,
               ],
@@ -705,6 +901,7 @@ window.__ModuleLoader__.load({
                       text: msg.text,
                       streaming: Boolean(msg.streaming),
                       error: Boolean(msg.error),
+                      tools: msg.tools,
                     }),
                   }, i)
               ))

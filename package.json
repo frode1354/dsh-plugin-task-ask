@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-task-ask",
-  "version": "0.1.8",
-  "description": "右侧栏旁路询问：只读当前任务与历史，不打断主会话",
+  "version": "0.1.9",
+  "description": "右侧栏旁路询问：只读当前任务与历史，可调工具，不打断主会话",
   "type": "module",
   "main": "index.js",
   "exports": {

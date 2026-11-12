@@ -28,9 +28,17 @@ const MAX_HISTORY_CHARS = 20_000
 const MAX_OPEN_TURN_CHARS = 28_000
 const MAX_LIVE_CHARS = 32_000
 const MAX_ANSWER_TOKENS = 2_048
-const ASK_TIMEOUT_MS = 90_000
+const ASK_TIMEOUT_MS = 120_000
+const MAX_TOOL_ROUNDS = 6
+const MAX_TOOL_EVENTS = 8
 
 /** @typedef {{ content: string, status: string }} TodoItem */
+/** @typedef {{
+ *   name: string,
+ *   kind: 'call' | 'result',
+ *   preview: string,
+ *   isError?: boolean,
+ * }} ToolEventItem */
 /** @typedef {{
  *   sessionId: string,
  *   title: string,
@@ -40,7 +48,10 @@ const ASK_TIMEOUT_MS = 90_000
  *   turn: number | null,
  *   step: number | null,
  *   todos: TodoItem[],
+ *   todosDone: TodoItem[],
+ *   planComplete: boolean,
  *   recentTools: string[],
+ *   toolEvents: ToolEventItem[],
  *   historyText: string,
  *   openTurnText: string,
  *   liveText: string,
@@ -73,6 +84,15 @@ export function apply(ctx) {
     } catch {
       return undefined
     }
+  }
+
+  // Optional tools service — sidecar may call tools without writing the main session.
+  let tools = null
+  for (const key of ['tools', 'toolRegistry', 'agentTools']) {
+    try {
+      const svc = ctx.get(key)
+      if (svc) { tools = svc; break }
+    } catch { /* optional */ }
   }
 
   /** @type {Map<string, LiveEntry>} */
@@ -340,10 +360,13 @@ export function apply(ctx) {
 
       const wantStream = body.stream === true
         || String(req.headers.accept || '').includes('text/event-stream')
+      const wantTools = body.tools !== false
 
       if (!wantStream) {
         try {
-          const answer = await answerQuestion(llm, sessions, getDefaultModel, snap, question)
+          const answer = await answerQuestion(llm, sessions, getDefaultModel, snap, question, {
+            tools: wantTools ? tools : null,
+          })
           json(res, {
             answer,
             interrupted: false,
@@ -366,7 +389,11 @@ export function apply(ctx) {
       const writeEvent = (event, data) => {
         res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
       }
-      writeEvent('meta', { snapshotAt: snap.updatedAt, mode: 'sidecar' })
+      writeEvent('meta', {
+        snapshotAt: snap.updatedAt,
+        mode: 'sidecar',
+        tools: Boolean(wantTools && tools),
+      })
 
       const ac = new AbortController()
       const onClose = () => ac.abort()
@@ -375,9 +402,18 @@ export function apply(ctx) {
 
       try {
         let produced = false
-        for await (const delta of streamAnswer(llm, sessions, getDefaultModel, snap, question, ac.signal)) {
-          produced = true
-          writeEvent('delta', { text: delta })
+        for await (const piece of streamAnswer(llm, sessions, getDefaultModel, snap, question, ac.signal, {
+          tools: wantTools ? tools : null,
+        })) {
+          if (typeof piece === 'string') {
+            produced = true
+            writeEvent('delta', { text: piece })
+          } else if (piece && piece.kind === 'text' && piece.text) {
+            produced = true
+            writeEvent('delta', { text: piece.text })
+          } else if (piece && piece.kind === 'tool') {
+            writeEvent('tool', piece)
+          }
         }
         if (!produced) throw new Error('模型未返回文本')
         writeEvent('done', { interrupted: false })
@@ -417,10 +453,14 @@ function buildSnapshot(sessions, agents, sessionId, liveEntry, opts = {}) {
   let agentStatus = 'unknown'
   try { agentStatus = agents.get(session.id)?.status ?? 'unknown' } catch { /* ignore */ }
 
-  let todos = []
-  try { todos = latestTodos(events) } catch { todos = [] }
+  let todosAll = []
+  try { todosAll = latestTodos(events) } catch { todosAll = [] }
+  const todosActive = todosAll.filter((t) => t.status !== 'completed')
+  const todosDone = todosAll.filter((t) => t.status === 'completed')
+  const planComplete = todosAll.length > 0 && todosActive.length === 0
 
   const phase = inferPhase(events, agentStatus, liveText, liveReasoning)
+  const toolEvents = collectToolEvents(events, MAX_TOOL_EVENTS)
 
   let historyText = ''
   let openTurnText = ''
@@ -436,6 +476,12 @@ function buildSnapshot(sessions, agents, sessionId, liveEntry, opts = {}) {
     live = recentPreview(events, liveText, liveReasoning)
   }
 
+  // Lite UI: only push active plan items. Completed plans stay in todosDone
+  // so the client can hide them behind a collapsed disclosure.
+  const todosForClient = opts.lite
+    ? (planComplete ? [] : todosActive.slice(0, 8))
+    : todosAll
+
   return {
     sessionId: String(session.id),
     title: safeTitle(session) ?? String(session.id).slice(0, 8),
@@ -444,8 +490,11 @@ function buildSnapshot(sessions, agents, sessionId, liveEntry, opts = {}) {
     phaseDetail: phase.detail,
     turn: phase.turn,
     step: phase.step,
-    todos: opts.lite ? todos.slice(0, 8) : todos,
+    todos: todosForClient,
+    todosDone: opts.lite ? todosDone.slice(0, 12) : todosDone,
+    planComplete,
     recentTools: phase.recentTools,
+    toolEvents,
     historyText,
     openTurnText,
     liveText: live,
@@ -460,11 +509,13 @@ function buildSnapshot(sessions, agents, sessionId, liveEntry, opts = {}) {
  */
 function buildAskPrompt(snap, question) {
   const system = [
-    '你是 DeepSeek Harness 的「旁路任务观察助手」。',
-    '用户正在主窗口跑任务；你只读旁听，绝不改写 / followup / steer 主任务。',
-    '最重要的依据是「进行中的回合对话」：包含本回合已落盘的消息、工具调用/结果，以及尚未写完的实时流式回复。',
-    '回答「现在在干什么 / 做到哪了」时，优先引用进行中回合与实时流，而不是更早的历史摘要。',
-    '若进行中回合显示仍在生成或工具未返回，如实说明未完成状态，不要假装任务已结束。',
+    '你是 DeepSeek Harness 的「旁路任务助手」。',
+    '用户正在主窗口跑任务；你旁听并回答，绝不 followup / steer / 改写主会话日志。',
+    '最重要的依据是「进行中的回合对话」：本回合消息、工具调用/结果、未落盘流式回复。',
+    '回答「现在在干什么 / 做到哪了」时，优先引用进行中回合与实时流。',
+    '若进行中回合仍在生成或工具未返回，如实说明未完成，不要假装已结束。',
+    '若可用工具已提供，你可以直接调用工具查证；工具结果只用于本次旁路回答，不会写入主会话。',
+    '已完成的计划/待办不要反复强调，除非用户问到。',
     '若信息不足，明确说缺什么，不要编造。',
     '用用户提问的语言回答。',
   ].join('\n')
@@ -486,11 +537,18 @@ function buildAskPrompt(snap, question) {
     snap.openTurnText || '(本回合暂无事件)',
     ...liveExtra,
     '',
-    '【待办】',
-    formatTodos(snap.todos),
+    '【待办 / 计划】',
+    snap.planComplete
+      ? `(计划已全部完成，共 ${snap.todosDone?.length || snap.todos.length} 项；除非用户问起否则勿反复复述)`
+      : formatTodos([
+        ...(snap.todos || []),
+        // full snap may already include done items inside todos
+      ].filter((t, i, arr) => arr.findIndex((x) => x.content === t.content && x.status === t.status) === i)),
     '',
     '【最近工具】',
-    snap.recentTools.length ? snap.recentTools.map((t) => `- ${t}`).join('\n') : '(无)',
+    (snap.toolEvents?.length
+      ? snap.toolEvents.map((t) => `- [${t.kind}] ${t.name}${t.preview ? `: ${t.preview}` : ''}`).join('\n')
+      : (snap.recentTools.length ? snap.recentTools.map((t) => `- ${t}`).join('\n') : '(无)')),
     '',
     '【更早历史摘要 — 仅作背景】',
     snap.historyText || '(暂无)',
@@ -708,10 +766,14 @@ function eventText(ev) {
  * @param {TaskSnapshot} snap
  * @param {string} question
  * @param {AbortSignal} [signal]
+ * @param {{ tools?: any }} [opts]
  */
-async function* streamAnswer(llm, sessions, getDefaultModel, snap, question, signal) {
+async function* streamAnswer(llm, sessions, getDefaultModel, snap, question, signal, opts = {}) {
   const route = resolveRoute(sessions, getDefaultModel, snap.sessionId)
   const { system, messages } = buildAskPrompt(snap, question)
+  const toolSvc = opts.tools || null
+  const toolDefs = listToolDefinitions(toolSvc)
+
   const ac = new AbortController()
   const onAbort = () => ac.abort()
   if (signal) {
@@ -719,17 +781,65 @@ async function* streamAnswer(llm, sessions, getDefaultModel, snap, question, sig
     else signal.addEventListener('abort', onAbort, { once: true })
   }
   const timer = setTimeout(() => ac.abort(), ASK_TIMEOUT_MS)
+
+  /** @type {any[]} */
+  let chat = [...messages]
+
   try {
-    for await (const chunk of llm.stream({
-      provider: route.provider,
-      model: route.model,
-      messages,
-      system,
-      maxTokens: MAX_ANSWER_TOKENS,
-      signal: ac.signal,
-    })) {
-      if (chunk?.type === 'text-delta' && typeof chunk.text === 'string' && chunk.text) {
-        yield chunk.text
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+      /** @type {{ id?: string, name: string, arguments: string }[]} */
+      const pendingCalls = []
+      let sawText = false
+      const req = {
+        provider: route.provider,
+        model: route.model,
+        messages: chat,
+        system,
+        maxTokens: MAX_ANSWER_TOKENS,
+        signal: ac.signal,
+        ...(toolDefs.length ? { tools: toolDefs } : {}),
+      }
+
+      for await (const chunk of llm.stream(req)) {
+        if (chunk?.type === 'text-delta' && typeof chunk.text === 'string' && chunk.text) {
+          sawText = true
+          yield { kind: 'text', text: chunk.text }
+          continue
+        }
+        // Tolerate several stream shapes for tool calls.
+        const call = normalizeToolCallChunk(chunk)
+        if (call) pendingCalls.push(call)
+      }
+
+      if (!pendingCalls.length || !toolSvc) {
+        if (!sawText && round === 0 && !pendingCalls.length) {
+          // nothing
+        }
+        break
+      }
+
+      for (const call of pendingCalls) {
+        yield {
+          kind: 'tool',
+          name: call.name,
+          status: 'running',
+          arguments: call.arguments,
+        }
+        let resultText = ''
+        let isError = false
+        try {
+          resultText = await executeToolCall(toolSvc, call.name, call.arguments, ac.signal)
+        } catch (err) {
+          isError = true
+          resultText = err instanceof Error ? err.message : String(err)
+        }
+        yield {
+          kind: 'tool',
+          name: call.name,
+          status: isError ? 'error' : 'done',
+          preview: truncate(String(resultText), 1_200),
+        }
+        chat = appendToolTurn(chat, call, resultText, isError)
       }
     }
   } finally {
@@ -744,15 +854,156 @@ async function* streamAnswer(llm, sessions, getDefaultModel, snap, question, sig
  * @param {() => any} getDefaultModel
  * @param {TaskSnapshot} snap
  * @param {string} question
+ * @param {{ tools?: any }} [opts]
  */
-async function answerQuestion(llm, sessions, getDefaultModel, snap, question) {
+async function answerQuestion(llm, sessions, getDefaultModel, snap, question, opts = {}) {
   let text = ''
-  for await (const delta of streamAnswer(llm, sessions, getDefaultModel, snap, question)) {
-    text += delta
+  for await (const piece of streamAnswer(llm, sessions, getDefaultModel, snap, question, undefined, opts)) {
+    if (typeof piece === 'string') text += piece
+    else if (piece?.kind === 'text') text += piece.text
   }
   text = text.trim()
   if (!text) throw new Error('模型未返回文本')
   return text
+}
+
+/** @param {any} tools */
+function listToolDefinitions(tools) {
+  if (!tools) return []
+  try {
+    if (typeof tools.definitions === 'function') {
+      const defs = tools.definitions()
+      return Array.isArray(defs) ? defs : []
+    }
+    if (typeof tools.list === 'function') {
+      const list = tools.list()
+      return Array.isArray(list) ? list : []
+    }
+    if (Array.isArray(tools.catalog)) return tools.catalog
+  } catch { /* ignore */ }
+  return []
+}
+
+/**
+ * @param {any} chunk
+ * @returns {{ id?: string, name: string, arguments: string } | null}
+ */
+function normalizeToolCallChunk(chunk) {
+  if (!chunk || typeof chunk !== 'object') return null
+  if (chunk.type === 'tool-call' || chunk.type === 'tool_call') {
+    const name = String(chunk.name || chunk.toolName || '')
+    if (!name) return null
+    const args = typeof chunk.arguments === 'string'
+      ? chunk.arguments
+      : chunk.arguments != null ? JSON.stringify(chunk.arguments) : '{}'
+    return { id: chunk.id || chunk.toolCallId, name, arguments: args }
+  }
+  if (chunk.type === 'tool-call-delta' && chunk.toolCall) {
+    return normalizeToolCallChunk({ type: 'tool-call', ...chunk.toolCall })
+  }
+  return null
+}
+
+/**
+ * @param {any} tools
+ * @param {string} name
+ * @param {string} argsJson
+ * @param {AbortSignal} [signal]
+ */
+async function executeToolCall(tools, name, argsJson, signal) {
+  let args = {}
+  try { args = argsJson ? JSON.parse(argsJson) : {} } catch { args = { raw: argsJson } }
+  const runners = ['execute', 'invoke', 'call', 'run']
+  for (const key of runners) {
+    if (typeof tools?.[key] === 'function') {
+      const out = await tools[key](name, args, { signal })
+      return stringifyToolResult(out)
+    }
+  }
+  if (typeof tools?.get === 'function') {
+    const tool = tools.get(name)
+    if (tool && typeof tool.execute === 'function') {
+      return stringifyToolResult(await tool.execute(args, { signal }))
+    }
+  }
+  throw new Error(`无法执行工具 ${name}：未找到 tools.execute / invoke`)
+}
+
+/** @param {unknown} out */
+function stringifyToolResult(out) {
+  if (out == null) return ''
+  if (typeof out === 'string') return out
+  if (typeof out === 'object' && out && 'content' in /** @type {any} */ (out)) {
+    return contentToText(/** @type {any} */ (out).content) || JSON.stringify(out)
+  }
+  try { return JSON.stringify(out, null, 2) } catch { return String(out) }
+}
+
+/**
+ * Append assistant tool-call + tool result into a local message list (never session).
+ * @param {any[]} messages
+ * @param {{ id?: string, name: string, arguments: string }} call
+ * @param {string} resultText
+ * @param {boolean} isError
+ */
+function appendToolTurn(messages, call, resultText, isError) {
+  const next = messages.slice()
+  const callId = call.id || `call_${Date.now()}`
+  next.push({
+    role: 'assistant',
+    content: [{
+      type: 'tool-call',
+      id: callId,
+      name: call.name,
+      arguments: call.arguments,
+    }],
+  })
+  next.push({
+    role: 'tool',
+    toolCallId: callId,
+    isError: isError || undefined,
+    content: [{ type: 'text', text: truncate(resultText, 8_000) }],
+  })
+  return next
+}
+
+/**
+ * Recent tool call/result pairs for the collapsible tools panel.
+ * @param {readonly any[]} events
+ * @param {number} limit
+ * @returns {ToolEventItem[]}
+ */
+function collectToolEvents(events, limit) {
+  /** @type {ToolEventItem[]} */
+  const items = []
+  /** @type {Map<string, string>} */
+  const names = new Map()
+  for (const ev of events) {
+    if (ev.type === 'tool/call') {
+      const callId = String(ev.data?.callId ?? '')
+      const name = String(ev.data?.name ?? 'tool')
+      if (callId) names.set(callId, name)
+      const args = typeof ev.data?.arguments === 'string' ? ev.data.arguments : ''
+      items.push({
+        name,
+        kind: 'call',
+        preview: args ? truncate(args, 160) : '',
+      })
+    } else if (ev.type === 'tool/result') {
+      const msg = ev.data?.message
+      const callId = String(msg?.toolCallId ?? '')
+      const name = (callId && names.get(callId)) || callId || 'tool'
+      const body = contentToText(msg?.content).trim()
+      const err = ev.data?.error
+      items.push({
+        name,
+        kind: 'result',
+        preview: truncate(body || (err ? `Error: ${err.reason || err.code || err.name}` : ''), 240),
+        isError: Boolean(msg?.isError || err),
+      })
+    }
+  }
+  return items.slice(-limit)
 }
 
 /**
