@@ -55,6 +55,7 @@ Copy-Item -Recurse -Force D:\deepseek_harness\dsh-plugin-task-ask\* "$env:USERPR
 
 ## 更新记录
 
+- **2026-11-12 0.1.10**：状态半栏（阶段 / 详情 / meta）改为可下拉折叠，默认收起只显示阶段一行。
 - **2026-11-12 0.1.9**：已完成计划默认折叠隐藏；工具动态改为下拉模块；旁路 ask 支持调用主界面工具（SSE `tool` 事件）；状态条/提示词同步实时上下文。
 - **2026-10-25 0.1.8**：旁路回答改用主聊天官方 `MarkdownText`（`@deepseek-ai/dsh-client-ui-primitives`），去掉自研 HTML 渲染。
 - **2026-10-25 0.1.7**：`session/disposed` + 孤儿 prune 回收 live；ask prompt 去掉 open-turn/live 重复；状态条展示最近动态预览；markdown 支持表格/标题/引用/嵌套列表。

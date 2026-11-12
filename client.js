@@ -82,14 +82,59 @@ window.__ModuleLoader__.load({
         }
         .taskAsk.status {
           flex: 0 0 auto;
-          padding: 10px 16px;
+          padding: 8px 12px 10px;
           border-bottom: 0.5px solid var(--dsw-alias-border-l3);
+        }
+        .taskAsk.statusFold {
+          margin: 0;
+          border-radius: 10px;
+          background: var(--dsw-alias-interactive-bg-hover);
+          overflow: hidden;
+        }
+        .taskAsk.statusFold > summary {
+          list-style: none;
+          cursor: pointer;
+          user-select: none;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 8px 10px;
+          min-width: 0;
+        }
+        .taskAsk.statusFold > summary::-webkit-details-marker { display: none; }
+        .taskAsk.statusFold > summary::after {
+          content: "";
+          width: 6px;
+          height: 6px;
+          margin-left: auto;
+          border-right: 1.5px solid var(--dsw-alias-label-tertiary);
+          border-bottom: 1.5px solid var(--dsw-alias-label-tertiary);
+          transform: rotate(-45deg);
+          transition: transform 0.12s ease;
+          flex: none;
+        }
+        .taskAsk.statusFold[open] > summary::after {
+          transform: rotate(45deg);
+        }
+        .taskAsk.statusBody {
+          padding: 0 10px 10px;
+          border-top: 0.5px solid var(--dsw-alias-border-l3);
+          max-height: min(42vh, 320px);
+          overflow-x: hidden;
+          overflow-y: auto;
+          overscroll-behavior: contain;
+          -webkit-overflow-scrolling: touch;
+          scrollbar-gutter: stable;
+        }
+        .taskAsk.statusBody .taskAsk.live {
+          max-height: none;
         }
         .taskAsk.phaseRow {
           display: flex;
           align-items: center;
           gap: 8px;
           min-width: 0;
+          flex: 1;
         }
         .taskAsk.dot {
           flex: 0 0 auto;
@@ -786,103 +831,115 @@ window.__ModuleLoader__.load({
             ],
           }),
           snap
-            ? jsxs('div', {
+            ? jsx('div', {
               className: 'taskAsk status',
-              children: [
-                jsxs('div', {
-                  className: 'taskAsk phaseRow',
-                  children: [
-                    jsx('span', {
-                      className: `taskAsk dot${running ? ' dotRunning' : ''}`,
-                      'aria-hidden': true,
-                    }),
-                    jsx('p', {
-                      className: 'taskAsk phase',
-                      children: snap.phase,
-                    }),
-                  ],
-                }),
-                snap.phaseDetail
-                  ? jsx('p', { className: 'taskAsk detail', children: snap.phaseDetail })
-                  : null,
-                meta ? jsx('p', { className: 'taskAsk meta', children: meta }) : null,
-                snap.liveText
-                  ? jsxs('div', {
-                    className: 'taskAsk live',
+              children: jsxs('details', {
+                className: 'taskAsk statusFold',
+                children: [
+                  jsxs('summary', {
                     children: [
-                      jsx('span', {
-                        className: 'taskAsk liveLabel',
-                        children: running ? '实时预览' : '最近动态',
-                      }),
-                      snap.liveText,
-                    ],
-                  })
-                  : null,
-                todosActive.length
-                  ? jsxs('div', {
-                    children: [
-                      jsx('span', {
-                        className: 'taskAsk liveLabel',
-                        style: { marginTop: 8 },
-                        children: '进行中计划',
-                      }),
-                      jsx(TodoList, { items: todosActive }),
-                    ],
-                  })
-                  : null,
-                planComplete && todosDone.length
-                  ? jsxs('details', {
-                    className: 'taskAsk fold',
-                    children: [
-                      jsx('summary', {
-                        children: `已完成计划 · ${todosDone.length}`,
-                      }),
-                      jsx('div', {
-                        className: 'taskAsk foldBody',
-                        children: jsx(TodoList, { items: todosDone }),
+                      jsxs('div', {
+                        className: 'taskAsk phaseRow',
+                        children: [
+                          jsx('span', {
+                            className: `taskAsk dot${running ? ' dotRunning' : ''}`,
+                            'aria-hidden': true,
+                          }),
+                          jsx('p', {
+                            className: 'taskAsk phase',
+                            children: snap.phase,
+                          }),
+                        ],
                       }),
                     ],
-                  })
-                  : (!planComplete && todosDone.length
-                    ? jsxs('details', {
-                      className: 'taskAsk fold',
-                      children: [
-                        jsx('summary', {
-                          children: `已完成 · ${todosDone.length}`,
-                        }),
-                        jsx('div', {
-                          className: 'taskAsk foldBody',
-                          children: jsx(TodoList, { items: todosDone }),
-                        }),
-                      ],
-                    })
-                    : null),
-                toolEvents.length
-                  ? jsxs('details', {
-                    className: 'taskAsk fold',
+                  }),
+                  jsxs('div', {
+                    className: 'taskAsk statusBody',
                     children: [
-                      jsx('summary', {
-                        children: `工具动态 · ${toolEvents.length}`,
-                      }),
-                      jsx('div', {
-                        className: 'taskAsk foldBody',
-                        children: toolEvents.map((t, i) => jsxs('div', {
-                          className: 'taskAsk toolRow',
+                      snap.phaseDetail
+                        ? jsx('p', { className: 'taskAsk detail', children: snap.phaseDetail })
+                        : null,
+                      meta ? jsx('p', { className: 'taskAsk meta', children: meta }) : null,
+                      snap.liveText
+                        ? jsxs('div', {
+                          className: 'taskAsk live',
                           children: [
                             jsx('span', {
-                              className: 'taskAsk toolName',
-                              children: `${t.name}${t.kind === 'result' ? ' · 结果' : ' · 调用'}`,
+                              className: 'taskAsk liveLabel',
+                              children: running ? '实时预览' : '最近动态',
                             }),
-                            t.preview
-                              ? jsx('div', { className: 'taskAsk toolPreview', children: t.preview })
-                              : null,
+                            snap.liveText,
                           ],
-                        }, `${t.name}-${t.kind}-${i}`)),
-                      }),
+                        })
+                        : null,
+                      todosActive.length
+                        ? jsxs('div', {
+                          children: [
+                            jsx('span', {
+                              className: 'taskAsk liveLabel',
+                              style: { marginTop: 8 },
+                              children: '进行中计划',
+                            }),
+                            jsx(TodoList, { items: todosActive }),
+                          ],
+                        })
+                        : null,
+                      planComplete && todosDone.length
+                        ? jsxs('details', {
+                          className: 'taskAsk fold',
+                          children: [
+                            jsx('summary', {
+                              children: `已完成计划 · ${todosDone.length}`,
+                            }),
+                            jsx('div', {
+                              className: 'taskAsk foldBody',
+                              children: jsx(TodoList, { items: todosDone }),
+                            }),
+                          ],
+                        })
+                        : (!planComplete && todosDone.length
+                          ? jsxs('details', {
+                            className: 'taskAsk fold',
+                            children: [
+                              jsx('summary', {
+                                children: `已完成 · ${todosDone.length}`,
+                              }),
+                              jsx('div', {
+                                className: 'taskAsk foldBody',
+                                children: jsx(TodoList, { items: todosDone }),
+                              }),
+                            ],
+                          })
+                          : null),
+                      toolEvents.length
+                        ? jsxs('details', {
+                          className: 'taskAsk fold',
+                          children: [
+                            jsx('summary', {
+                              children: `工具动态 · ${toolEvents.length}`,
+                            }),
+                            jsx('div', {
+                              className: 'taskAsk foldBody',
+                              children: toolEvents.map((t, i) => jsxs('div', {
+                                className: 'taskAsk toolRow',
+                                children: [
+                                  jsx('span', {
+                                    className: 'taskAsk toolName',
+                                    children: `${t.name}${t.kind === 'result' ? ' · 结果' : ' · 调用'}`,
+                                  }),
+                                  t.preview
+                                    ? jsx('div', { className: 'taskAsk toolPreview', children: t.preview })
+                                    : null,
+                                ],
+                              }, `${t.name}-${t.kind}-${i}`)),
+                            }),
+                          ],
+                        })
+                        : null,
                     ],
-                  })
-                  : null,
-              ],
+                  }),
+                ],
+              }),
             })
             : null,
           jsx('div', {
